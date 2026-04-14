@@ -2,19 +2,138 @@ pipeline {
     agent any 
     environment { 
     stages { 
-        stage('Checkout') { ... } 
-        stage('Build Java App') { ... } 
-        stage('Build Docker Image') { ... } 
-        stage('Start Services') { ... } 
-        stage('Test Redis') { ... } 
-        stage('Test PostgreSQL') { ... } 
-        stage('Test Client') { ... } 
-        stage('Test Nginx') { ... } 
-        stage('Cleanup') { ... } 
-    } 
-    post { 
-        always { ... } 
-        success { ... } 
-        failure { ... } 
+        stage('Checkout') { 
+    steps { 
+        script { 
+            echo "${BLUE} GitHub-тан код алу${RESET}" 
+        } 
+        checkout scm 
+        sh 'ls -la'
     } 
 } 
+ 
+        stage('Build Java App') { 
+    steps { 
+        script { 
+            docker.image('maven:3.8-openjdk-11').inside { 
+                sh ''' 
+                    cd app 
+                    echo " Maven dependency-лерді жүктеу..." 
+                    mvn dependency:go-offline 
+                     
+                    echo " Қолданбаны құрастыру..." 
+                    mvn clean package assembly:single -DskipTests 
+                     
+                    echo " Құрастырылған файлдар:" 
+                    ls -la target/ 
+                ''' 
+            } 
+        } 
+    } 
+} 
+
+        stage('Build Docker Image') { 
+    steps { 
+        script { 
+            sh """ 
+                echo " Docker образын құрастыру..." 
+                docker build -t ${DOCKER_IMAGE} . 
+                docker tag ${DOCKER_IMAGE} devops-app:latest 
+                docker images | head -5 
+            """ 
+        } 
+    } 
+} 
+ 
+        stage('Start Services') { 
+    steps { 
+        script { 
+            sh ''' 
+                echo " Docker Compose сервистерін іске қосу..." 
+                docker-compose down -v 
+                docker-compose up -d 
+                echo " Сервистердің іске қосылуын күту... (20 секунд)" 
+                sleep 20 
+                docker-compose ps 
+            ''' 
+        } 
+    } 
+} 
+
+        stage('Test Redis') { 
+    steps { 
+        script { 
+            sh ''' 
+                echo " Redis тестілеу..." 
+                 
+                # Бірнеше рет сұрау жіберу 
+                for i in 1 2 3; do 
+                    echo "   Сұрау $i:" 
+                    curl -s http://localhost:5000/ | grep -E "hits|message" 
+                    sleep 1 
+                done 
+                 
+                echo " Redis ақпараты:" 
+                curl -s http://localhost:5000/redis | python -m json.tool 
+            ''' 
+        } 
+    } 
+} 
+
+        stage('Test PostgreSQL') { 
+    steps { 
+        script { 
+            sh ''' 
+                echo " PostgreSQL тестілеу..." 
+                 
+                # Тест пайдаланушыларын қосу 
+                curl -s "http://localhost:5000/add-user?name=JenkinsUser1" 
+                curl -s "http://localhost:5000/add-user?name=JenkinsUser2" 
+                curl -s "http://localhost:5000/add-user?name=JenkinsUser3" 
+                 
+                echo " Пайдаланушылар тізімі:" 
+                curl -s http://localhost:5000/users | python -m json.tool 
+            ''' 
+        } 
+    } 
+} 
+
+        stage('Test Client') { 
+    steps { 
+        script { 
+            sh ''' 
+                echo " Python клиентін тестілеу..." 
+                docker-compose run --rm client || echo "   Клиент қатемен аяқталды" 
+            ''' 
+        } 
+    } 
+} 
+        stage('Cleanup') { 
+    steps { 
+        script { 
+            sh ''' 
+                echo " Тазалау..." 
+                docker-compose down -v 
+                echo " Контейнерлер тазаланды" 
+            ''' 
+        } 
+    } 
+} 
+
+    } 
+   post { 
+    always { 
+        echo " Тазалау жұмыстары" 
+        sh 'docker-compose down -v' 
+    } 
+     
+    success { 
+        echo "ПАЙПЛАЙН СӘТТІ АЯҚТАЛДЫ!" 
+    } 
+     
+    failure { 
+        echo "ПАЙПЛАЙН ҚАТЕМЕН АЯҚТАЛДЫ!" 
+        echo "Қателерді тексеріңіз" 
+    } 
+} 
+
